@@ -148,13 +148,19 @@ def match_and_fit_distortion(path_data, options, debug_folder=None):
     
     path_catalogue = options['catalogue']
     
-    archive = zipfile.ZipFile(path_data, 'r')
-    try:
-        data = json.load(archive.open('results.txt'))
-        other_stars_df = pd.read_csv(archive.open('STACKED_CENTROIDS_DATA.csv'))
-    except Exception: # backwards compatibility with old format
-        data = json.load(archive.open('data/results.txt'))
-        other_stars_df = pd.read_csv(archive.open('data/STACKED_CENTROIDS_DATA.csv'))
+    p = Path(path_data)
+    if p.is_dir():
+        data_dir = p / 'data' if (p / 'data').exists() else p
+        data = json.loads((data_dir / 'results.txt').read_text())
+        other_stars_df = pd.read_csv(data_dir / 'STACKED_CENTROIDS_DATA.csv')
+    else:
+        archive = zipfile.ZipFile(path_data, 'r')
+        try:
+            data = json.load(archive.open('results.txt'))
+            other_stars_df = pd.read_csv(archive.open('STACKED_CENTROIDS_DATA.csv'))
+        except Exception: # backwards compatibility with old format
+            data = json.load(archive.open('data/results.txt'))
+            other_stars_df = pd.read_csv(archive.open('data/STACKED_CENTROIDS_DATA.csv'))
     other_stars_df = other_stars_df.astype({'px':float, 'py':float}) # fix datatypes
     image_size = data['img_shape']
     basename = Path(path_data).stem + data['starttime']
@@ -266,6 +272,8 @@ def match_and_fit_distortion(path_data, options, debug_folder=None):
                        'ROLL':np.degrees(result[3])-180, # TODO: clarify this dodgy +/- 180 thing
                        'rough fit threshold (arcsec)':options['rough_match_threshhold'],
                        'distortion order': options['distortionOrder'],
+                       'basis_type': options.get('basis_type', 'polynomial'),
+                       'img_shape': list(image_size),
                        'distortion coeffs x': dict(zip(coeff_names, coeff_x)),
                        'distortion coeffs y': dict(zip(coeff_names, coeff_y)),
                        'nearest-neighbour error correlation': nn_corr,

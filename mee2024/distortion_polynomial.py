@@ -21,35 +21,29 @@ _log = logging.getLogger(__name__)
 
 mapping = {'constant':0, 'linear':1, 'quadratic':2, 'cubic':3, 'quartic': 4, 'quintic':5, 'sextic': 6, 'septic':7}
 
-def get_basis(y, x, w, m, options, use_special=False):
+def get_basis(y, x, w, options):
     basis = []
     order = mapping[options['distortionOrder']]
-    if options['basis_type'] == 'polynomial' or not use_special:
-        for i in range(1, order+1): # up to nth order binomials
+    basis_type = options.get('basis_type', 'polynomial')
+    if basis_type == 'polynomial':
+        for i in range(1, order+1):
             for j in range(i+1):
                 basis.append(y ** j * x ** (i-j) / w**i)
-        return np.array(basis).T
-    elif options['basis_type'] == 'legendre':
+    elif basis_type == 'legendre':
         legendre_polies = [legendre(i) for i in range(order+1)]
-        for i in range(1, order+1): # up to nth order legendre binomials
+        for i in range(1, order+1):
             for j in range(i+1):
-                basis.append(legendre_polies[j](y) * legendre_polies[i-j](x) / w**i)
-        return np.array(basis).T
+                basis.append(legendre_polies[j](y/w) * legendre_polies[i-j](x/w))
     else:
-        raise Exception("invalid basis_type")
+        raise Exception(f"invalid basis_type: {basis_type!r}")
+    return np.array(basis).T
 
 def get_coeff_names(options):
-    names = ['1']
-    # TODO: check basis type
-    for i in range(1, mapping[options['distortionOrder']]+1): # up to nth order binomials
+    # Format: '[px, py]' = power of x, power of y — basis-agnostic
+    names = ['[0, 0]']
+    for i in range(1, mapping[options['distortionOrder']]+1):
         for j in range(i+1):
-            if j == 0:
-                names.append(f'x^{i-j}')
-            elif i - j == 0:
-                names.append(f'y^{j}')
-            else:
-                names.append(f'x^{i-j} * y^{j}')
-    names = [name.replace('x^1', 'x').replace('y^1', 'y') for name in names]
+            names.append(f'[{i-j}, {j}]')
     return names
 
 '''
@@ -65,8 +59,7 @@ def _regression_helper(errors, basis_x, basis_y):
     return rms
 
 '''
-absorb two constant and two linear degrees of freedom in (reg_x, reg_y) into shifts in
-shifts in q
+absorb two constant and two linear degrees of freedom in (reg_x, reg_y) into shifts in q
 returns: corrected q
 '''
 def _get_corrected_q(q, reg_x, reg_y, w):
@@ -94,7 +87,7 @@ def _date_guess(date_guess, q, plate, stardata, img_shape, options):
     
     detransformed = transforms.detransform_vectors(q, target)
     errors = detransformed - plate
-    basis = get_basis(plate[:, 0], plate[:, 1], w, m, options)
+    basis = get_basis(plate[:, 0], plate[:, 1], w, options)
     #print('pshape', pmotion.shape)
     theta = q[3]
 
@@ -124,7 +117,7 @@ def _date_guess(date_guess, q, plate, stardata, img_shape, options):
 
     dtt = np.linspace(-15, 15, num=40)
     rmss = []
-    basis = get_basis(plate[:, 0], plate[:, 1], w, m, options)
+    basis = get_basis(plate[:, 0], plate[:, 1], w, options)
     t0 = date_string_to_float(date_guess)
     for dt in dtt:
         stardata_copy = copy.copy(stardata)
@@ -167,10 +160,10 @@ plate: (x, y) coordinates of stars
 target: corresponding(x', y', z') of star true positions according to catalogue
 new Oct'24: option for weighted centroids 
 '''
-def _cubic_helper(q, plate, target, w, m, fix_coeff_x, fix_coeff_y, options, use_special=False, weights=1):
+def _cubic_helper(q, plate, target, w, m, fix_coeff_x, fix_coeff_y, options, weights=1):
     detransformed = transforms.detransform_vectors(q, target)
     errors = detransformed - plate
-    basis = get_basis(plate[:, 0], plate[:, 1], w, m, options, use_special)
+    basis = get_basis(plate[:, 0], plate[:, 1], w, options)
 
     '''
     new: if requested, use "fixed" higher order contributions
@@ -221,9 +214,8 @@ def _cubic_helper(q, plate, target, w, m, fix_coeff_x, fix_coeff_y, options, use
     return _get_corrected_q(q, ols_result_x, ols_result_y, w), plate_corrected, coeff_x, coeff_y, basis, errors_fixed, ols_result_x, ols_result_y, platescale_stdrelerror
 
 def apply_corrections(q, plate, coeff_x, coeff_y, img_shape, options):
-    w = (max(img_shape)/2) # 1 # for astrometrica convention
-    m = 1 #result.x[0] # for astrometrica convention
-    basis = get_basis(plate[:, 0], plate[:, 1], w, m, options)
+    w = (max(img_shape)/2)
+    basis = get_basis(plate[:, 0], plate[:, 1], w, options)
     _log.debug("apply_corrections basis shape=%s", basis.shape)
     corr_x = np.einsum('ji,i->j', basis, coeff_x[1:]) # 1: to remove constant (which should be near-zero)
     corr_y = np.einsum('ji,i->j', basis, coeff_y[1:])
@@ -242,7 +234,7 @@ def _do_3D_plot(plate, errors, reg_x, reg_y, img_shape, w, m, options):
     Y = np.linspace(-img_shape[0]/2, img_shape[0]/2, 20)
     X, Y = np.meshgrid(X, Y)
 
-    basis = get_basis(Y.flatten(), X.flatten(), w, m, options)
+    basis = get_basis(Y.flatten(), X.flatten(), w, options)
     
     ### fix for fixed coeffs
     order_total = mapping[options['distortionOrder']]
@@ -308,13 +300,6 @@ def do_cubic_fit(plate, stardata, initial_guess, img_shape, options, weights=1):
     q_corrected, plate_corrected, coeff_x, coeff_y, basis, errors, reg_x, reg_y, platescale_stdrelerror = _cubic_helper(q_corrected, plate, target, w, m, fix_coeff_x, fix_coeff_y, options, weights=weights) # apply for third time to really shrink the unwanted coefficients
 
     
-    '''
-    now if needed, apply the special basis functions
-    if not options['basis_type'] == 'polynomial':
-        print("now using special basis")
-        q_corrected, plate_corrected, reg_x, reg_y, basis, errors = _cubic_helper(q_corrected, plate, target, w, m, options, use_special=True) # apply for third time to really shrink the unwanted coefficients
-    '''
-
     #print('residuals_x\n', reg_x.predict(basis) / m - errors[:, 1])
     #print('residuals_y\n', reg_y.predict(basis) / m - errors[:, 0])
     _log.debug("fit params x=%s  y=%s", reg_x.params, reg_y.params)
@@ -402,6 +387,9 @@ def _open_distortion_files(options):
             platescale_uncertainties.append(data["platescale_relative_uncertainty"])
         if "distortion order" in data and not data["distortion order"] == options["distortionOrder"]:
             raise Exception(f'input distortion order not consistent: {options["distortionOrder"]} was requested but input files have order {data["distortion order"]}')
+        file_basis = data.get('basis_type', 'polynomial')
+        if file_basis != options.get('basis_type', 'polynomial'):
+            raise Exception(f'basis_type mismatch: options request {options.get("basis_type", "polynomial")!r} but file has {file_basis!r}')
         for k, v in data["distortion coeffs x"].items():
             coeff_x[k] += v/n
         for k, v in data["distortion coeffs y"].items():
